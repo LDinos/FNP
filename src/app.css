@@ -1,0 +1,25 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+	--bg: #141414;
+	--surface: #1c1c1c;
+	--text: #ffffff;
+	--muted: #9b9b9b;
+	--accent: #b45cff;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--text);
+	font-family: 'Inter', system-ui, sans-serif;
+}
+
+button {
+	font-family: inherit;
+}
