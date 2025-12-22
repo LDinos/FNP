@@ -64,6 +64,14 @@
 <CallFooter />
 
 <style>
+	:global(::-webkit-scrollbar) {
+		width: 10px;
+	}
+
+	:global(::-webkit-scrollbar-thumb) {
+		background: #4b5563;
+		border-radius: 8px;
+	}
 	.app-shell {
 		padding-top: 64px; /* header height */
 		height: 100vh;

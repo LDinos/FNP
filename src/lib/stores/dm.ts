@@ -17,3 +17,4 @@ export const unreadCounts = writable<Map<string, number>>(new Map());
 
 export const friendConversationMap = writable<Map<string, string>>(new Map());
 
+export const readMessages = writable<Set<string>>(new Set());

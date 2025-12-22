@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { currentUser } from '$lib/stores/user';
 	import { currentStatus } from '$lib/stores/status';
+	import { socket } from '$lib/socket';
 
 	$: path = $page.url.pathname;
 	let showStatusMenu = false;
@@ -36,6 +37,26 @@
 		});
 	}
 
+	async function logout() {
+		try {
+			await fetch('http://localhost:3001/auth/logout', {
+			method: 'POST',
+			credentials: 'include'
+			});
+		} catch (e) {
+			console.error('Logout failed', e);
+		}
+
+		// clear client state
+		currentUser.set(null);
+
+		// disconnect socket
+		socket.disconnect();
+
+		// redirect to login
+		goto('/login');
+	}
+
 	function statusColor(status: string) {
 		return (
 			{
@@ -65,6 +86,11 @@
 					<button on:click={() => setStatus('AWAY')}>🟡 Away</button>
 					<button on:click={() => setStatus('BUSY')}>🔴 Busy</button>
 					<button on:click={() => setStatus('OFFLINE')}>⚪ Offline</button>
+					<div class="divider"></div>
+
+					<button class="logout" on:click={logout}>
+					🚪 Log out
+					</button>
 				</div>
 			{/if}
 		</div>
@@ -177,6 +203,14 @@
 		border-radius: 8px;
 		cursor: pointer;
 		font-size: 14px;
+	}
+	
+	.status-menu button.logout {
+		color: #ef4444; /* red */
+	}
+
+	.status-menu button.logout:hover {
+		background: rgba(239, 68, 68, 0.15);
 	}
 
 	.status-menu button:hover {

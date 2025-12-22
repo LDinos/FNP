@@ -3,10 +3,18 @@
 	import { onlineUsers } from '$lib/stores/presence';
 	import { socket } from '$lib/socket';
 	import { onMount, onDestroy } from 'svelte';
-	import { activeConversationId, messagesByConversation, typingUsers, conversations, unreadCounts, friendConversationMap } from '$lib/stores/dm';
+	import {
+		activeConversationId,
+		messagesByConversation,
+		typingUsers,
+		conversations,
+		unreadCounts,
+		friendConversationMap
+	} from '$lib/stores/dm';
 	import type { Message } from '$lib/types/dm';
 	import { currentUser } from '$lib/stores/user';
 	import { browser } from '$app/environment';
+	import { readMessages } from '$lib/stores/dm';
 
 	let presenceInterval: any;
 	let messageInput = '';
@@ -22,7 +30,7 @@
 	let notifications = [];
 	let showNotifications = false;
 	let friends = [];
-  let isAtBottom = true;
+	let isAtBottom = true;
 	let typingTimeout: any;
 
 	$: filteredFriends = friends.filter((f) =>
@@ -36,11 +44,8 @@
 			unreadCounts.set(new Map(JSON.parse(stored)));
 		}
 
-		const unsubscribe = unreadCounts.subscribe(map => {
-			localStorage.setItem(
-			'unreadCounts',
-			JSON.stringify(Array.from(map.entries()))
-			);
+		const unsubscribe = unreadCounts.subscribe((map) => {
+			localStorage.setItem('unreadCounts', JSON.stringify(Array.from(map.entries())));
 		});
 		const res = await fetch('http://localhost:3001/friends/requests', {
 			credentials: 'include'
@@ -51,7 +56,7 @@
 		});
 		friends = await res2.json();
 		document.addEventListener('click', closeMenus);
-    	loadConversations();
+		//loadConversations();
 		pollPresence(); // initial
 		presenceInterval = setInterval(pollPresence, 5000); // every 5s
 		return () => document.removeEventListener('click', closeMenus);
@@ -65,12 +70,12 @@
 		return friend.status;
 	}
 
-  function getUsername(userId: string) {
-    if (selectedFriend?.id === userId) {
-      return selectedFriend.username;
-    }
-    return 'Someone';
-  }
+	function getUsername(userId: string) {
+		if (selectedFriend?.id === userId) {
+			return selectedFriend.username;
+		}
+		return 'Someone';
+	}
 
 	function statusColor(status: string) {
 		return (
@@ -87,59 +92,24 @@
 		openMenuFor = null;
 	}
 
-  async function loadConversations() {
-    const res = await fetch('http://localhost:3001/dm/conversations', {
-      credentials: 'include'
-    });
+	async function loadConversations() {
+		const res = await fetch('http://localhost:3001/dm/conversations', {
+			credentials: 'include'
+		});
 
-    const convos = await res.json();
-    conversations.set(convos);
+		const convos = await res.json();
+		conversations.set(convos);
 
-    // build friend → conversation map
-    friendConversationMap.set(
-      new Map(
-        convos.map(convo => {
-          const other = convo.participants.find(
-            p => p.user.id !== $currentUser.id
-          )?.user;
-          return [other.id, convo.id];
-        })
-      )
-    );
-  }
-
-  async function openConversation(convo, friend) {
-    selectedFriend = friend;
-    activeConversationId.set(convo.id);
-
-    // Get current map value safely
-    let currentMap = new Map();
-    messagesByConversation.subscribe(m => currentMap = m)();
-
-    unreadCounts.update(map => {
-      const next = new Map(map);
-      next.delete(convo.id);
-      return next;
-    });
-
-    // If messages already loaded, do nothing
-    if (currentMap.has(convo.id)) return;
-
-    // Fetch messages FIRST
-    const res = await fetch(
-      `http://localhost:3001/dm/${convo.id}/messages`,
-      { credentials: 'include' }
-    );
-
-    const messages = await res.json();
-
-    // THEN update the store synchronously
-    messagesByConversation.update(_map => {
-      const newMap = new Map(_map);
-      newMap.set(convo.id, messages);
-      return newMap;
-    });
-  }
+		// build friend → conversation map
+		friendConversationMap.set(
+			new Map(
+				convos.map((convo) => {
+					const other = convo.participants.find((p) => p.user.id !== $currentUser.id)?.user;
+					return [other.id, convo.id];
+				})
+			)
+		);
+	}
 
 	async function pollPresence() {
 		try {
@@ -212,56 +182,53 @@
 	}
 
 	socket.on('dm:typing', ({ conversationId, userId }) => {
-    if (conversationId !== $activeConversationId) return;
+		if (conversationId !== $activeConversationId) return;
 
-    typingUsers.update(map => {
-      const newMap = new Map(map);
-      const set = newMap.get(conversationId) ?? new Set();
+		typingUsers.update((map) => {
+			const newMap = new Map(map);
+			const set = newMap.get(conversationId) ?? new Set();
 
-      set.add(userId);
-      newMap.set(conversationId, set);
+			set.add(userId);
+			newMap.set(conversationId, set);
 
-      return newMap;
-    });
+			return newMap;
+		});
 
-    // auto-remove after delay
-    setTimeout(() => {
-      typingUsers.update(map => {
-        const newMap = new Map(map);
-        const set = newMap.get(conversationId);
+		// auto-remove after delay
+		setTimeout(() => {
+			typingUsers.update((map) => {
+				const newMap = new Map(map);
+				const set = newMap.get(conversationId);
 
-        if (!set) return map;
+				if (!set) return map;
 
-        set.delete(userId);
-        if (set.size === 0) newMap.delete(conversationId);
+				set.delete(userId);
+				if (set.size === 0) newMap.delete(conversationId);
 
-        return newMap;
-      });
-    }, 1500);
-  });
+				return newMap;
+			});
+		}, 1500);
+	});
 
 	socket.on('dm:message', (message) => {
 		if (message.conversationId !== $activeConversationId) {
-			unreadCounts.update(map => {
+			unreadCounts.update((map) => {
 				const next = new Map(map);
-				next.set(
-				message.conversationId,
-				(next.get(message.conversationId) ?? 0) + 1
-				);
+				next.set(message.conversationId, (next.get(message.conversationId) ?? 0) + 1);
 				return next;
 			});
 		}
-		messagesByConversation.update(map => {
+		messagesByConversation.update((map) => {
 			const msgs = map.get(message.conversationId) ?? [];
-			if (msgs.some(m => m.id === message.id)) return map;
+			if (msgs.some((m) => m.id === message.id)) return map;
 
 			const next = new Map(map);
 			next.set(message.conversationId, [...msgs, message]);
 			return next;
 		});
 
-		conversations.update(list => {
-			const idx = list.findIndex(c => c.id === message.conversationId);
+		conversations.update((list) => {
+			const idx = list.findIndex((c) => c.id === message.conversationId);
 			if (idx === -1) return list;
 
 			const convo = list[idx];
@@ -271,10 +238,7 @@
 				messages: [message]
 			};
 
-			return [
-				updated,
-				...list.filter(c => c.id !== message.conversationId)
-			];
+			return [updated, ...list.filter((c) => c.id !== message.conversationId)];
 		});
 
 		scrollToBottom(true);
@@ -299,7 +263,13 @@
 		updateFriendStatus(userId, status);
 	});
 
-  
+	socket.on('dm:read', ({ messageIds }) => {
+		readMessages.update(set => {
+			const next = new Set(set);
+			messageIds.forEach(id => next.add(id));
+			return next;
+		});
+	});
 
 	function updateFriendStatus(friendId, status) {
 		friends = friends.map((f) =>
@@ -375,13 +345,27 @@
 			return new Map(_map);
 		});
 		const convoId = $friendConversationMap.get(friend.id);
-  		if (!convoId) return;
-		unreadCounts.update(map => {
+		if (!convoId) return;
+		unreadCounts.update((map) => {
 			const next = new Map(map);
 			next.delete(convoId);
 			return next;
 		});
-      
+		await fetch('http://localhost:3001/dm/read', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			credentials: 'include',
+			body: JSON.stringify({ conversationId: convo.id })
+		});
+
+		const readRes = await fetch(
+			`http://localhost:3001/dm/${convo.id}/reads`,
+			{ credentials: 'include' }
+		);
+
+		const readMessageIds: string[] = await readRes.json();
+		readMessages.set(new Set(readMessageIds));
+
 		scrollToBottom(true);
 	}
 
@@ -404,50 +388,46 @@
 		scrollToBottom(true);
 	}
 
-  function emitTyping() {
-    if (!$activeConversationId) return;
+	function emitTyping() {
+		if (!$activeConversationId) return;
 
-    socket.emit('dm:typing', {
-      conversationId: $activeConversationId
-    });
+		socket.emit('dm:typing', {
+			conversationId: $activeConversationId
+		});
 
-    clearTimeout(typingTimeout);
-    typingTimeout = setTimeout(() => {
-      typingUsers.update(map => {
-        const newMap = new Map(map);
-        newMap.delete($activeConversationId);
-        return newMap;
-      });
-    }, 1500);
-  }
-
+		clearTimeout(typingTimeout);
+		typingTimeout = setTimeout(() => {
+			typingUsers.update((map) => {
+				const newMap = new Map(map);
+				newMap.delete($activeConversationId);
+				return newMap;
+			});
+		}, 1500);
+	}
 
 	function scrollToBottom(force = false) {
-    if (!chatContainer) return;
-    if (!force && !isAtBottom) return;
+		if (!chatContainer) return;
+		if (!force && !isAtBottom) return;
 
-    chatContainer.scrollTo({
-      top: chatContainer.scrollHeight,
-      behavior: 'auto'
-    });
-  }
+		chatContainer.scrollTo({
+			top: chatContainer.scrollHeight,
+			behavior: 'auto'
+		});
+	}
 
-  function handleScroll() {
-    if (!chatContainer) return;
-    const threshold = 80;
-    isAtBottom =
-      chatContainer.scrollHeight -
-        chatContainer.scrollTop -
-        chatContainer.clientHeight <
-      threshold;
-  }
+	function handleScroll() {
+		if (!chatContainer) return;
+		const threshold = 80;
+		isAtBottom =
+			chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight < threshold;
+	}
 
-  function formatTime(date: string) {
-    return new Date(date).toLocaleTimeString([], {
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  }
+	function formatTime(date: string) {
+		return new Date(date).toLocaleTimeString([], {
+			hour: '2-digit',
+			minute: '2-digit'
+		});
+	}
 </script>
 
 {#if showAddFriend}
@@ -516,81 +496,50 @@
 			</div>
 		</div>
 
-    <!-- <div class="conversation-list">
-      {#each $conversations as convo}
-        {@const other =
-          convo.participants.find(p => p.user.id !== $currentUser.id)?.user}
-
-        <div
-          class="conversation-item {convo.id === $activeConversationId ? 'active' : ''}"
-          on:click={() => openConversation(convo, other)}
-        >
-          <img src="/avatar-placeholder.png" />
-
-          <div class="meta">
-            <div class="name">{other?.username}</div>
-            <div class="preview">
-              {convo.messages[0]?.content ?? 'No messages yet'}
-            </div>
-          </div>
-        </div>
-      {/each}
-    </div> -->
-
-
 		<div class="friends-list">
-      {#each filteredFriends as friend}
-        {@const convoId = $friendConversationMap.get(friend.id)}
-        {@const unread = convoId ? $unreadCounts.get(convoId) : 0}
+			{#each filteredFriends as friend}
+				{@const convoId = $friendConversationMap.get(friend.id)}
+				{@const unread = convoId ? $unreadCounts.get(convoId) : 0}
 
-        <div class="friend-bubble" on:click={() => openDM(friend)}>
-          <div class="avatar-wrapper">
-            <img src="/avatar-placeholder.png" alt="" />
+				<div class="friend-bubble" on:click={() => openDM(friend)}>
+					<div class="avatar-wrapper">
+						<img src="/avatar-placeholder.png" alt="" />
 
-            <span
-              class="status-dot"
-              style="background: {statusColor(effectiveStatus(friend))}"
-            />
-          </div>
+						<span class="status-dot" style="background: {statusColor(effectiveStatus(friend))}" />
+					</div>
 
-          <span class="name">{friend.username}</span>
+					<span class="name">{friend.username}</span>
 
-          {#if unread}
-            <span class="badge">{unread}</span>
-          {/if}
+					{#if unread}
+						<span class="badge">{unread}</span>
+					{/if}
 
-          <div class="menu-wrapper" on:click|stopPropagation>
-            <button
-              class="more-btn"
-              on:click={() =>
-                (openMenuFor = openMenuFor === friend.id ? null : friend.id)
-              }
-            >
-              <MoreVertical size={16} />
-            </button>
+					<div class="menu-wrapper" on:click|stopPropagation>
+						<button
+							class="more-btn"
+							on:click={() => (openMenuFor = openMenuFor === friend.id ? null : friend.id)}
+						>
+							<MoreVertical size={16} />
+						</button>
 
-            {#if openMenuFor === friend.id}
-              <div class="context-menu">
-                <button>Mute</button>
-                <button>Block</button>
-                <button
-                  class="danger"
-                  on:click={() => deleteFriend(friend.id)}
-                >
-                  Delete
-                </button>
-              </div>
-            {/if}
-          </div>
-        </div>
-      {/each}
-    </div>
-
+						{#if openMenuFor === friend.id}
+							<div class="context-menu">
+								<button>Mute</button>
+								<button>Block</button>
+								<button class="danger" on:click={() => deleteFriend(friend.id)}> Delete </button>
+							</div>
+						{/if}
+					</div>
+				</div>
+			{/each}
+		</div>
 	</aside>
 
 	<!-- RIGHT PANEL -->
 	<section class="chat-panel">
 		{#if selectedFriend}
+			{@const msgs = $messagesByConversation.get($activeConversationId) ?? []}
+			{@const lastMsg = msgs[msgs.length - 1]}
 			<div class="dm-panel">
 				<!-- HEADER -->
 				<div class="dm-header">
@@ -603,29 +552,40 @@
 					</div>
 				</div>
 
-				<!-- MESSAGES -->
+				<!-- MESSAGES -->				
 				<div class="dm-messages" bind:this={chatContainer} on:scroll={handleScroll}>
 					{#each $messagesByConversation.get($activeConversationId) ?? [] as msg}
-						<div class="message {msg.sender.id === $currentUser.id ? 'me' : ''}">
-							<div class="bubble">
-								<span class="content">{msg.content}</span>
-                <span class="time">{formatTime(msg.createdAt)}</span>
+						<div class="message-row {msg.sender.id === $currentUser.id ? 'me' : 'them'}">
+							{#if msg.sender.id !== $currentUser.id}
+							<img
+								class="message-avatar"
+								src="/avatar-placeholder.png"
+								alt="avatar"
+							/>
+							{/if}
+							<div class="message {msg.sender.id === $currentUser.id ? 'me' : ''}">
+								<div class="bubble">
+									<span class="content">{msg.content}</span>
+									<span class="time">{formatTime(msg.createdAt)}</span>
+								</div>
 							</div>
 						</div>
 					{/each}
-
-					{#if $typingUsers.get($activeConversationId)?.size}
-            {@const users =
-              Array.from($typingUsers.get($activeConversationId))}
-
-            <div class="typing-indicator">
-              {users.length === 1
-                ? `${getUsername(users[0])} is typing…`
-                : `Multiple people are typing…`}
-            </div>
-          {/if}
-
+					{#if lastMsg && lastMsg.sender.id === $currentUser.id}
+						{#if $readMessages.has(lastMsg.id)}
+							<div class="seen-indicator">Seen</div>
+						{/if}
+					{/if}
 				</div>
+				{#if $typingUsers.get($activeConversationId)?.size}
+					{@const users = Array.from($typingUsers.get($activeConversationId))}
+
+					<div class="typing-indicator">
+						{users.length === 1
+							? `${getUsername(users[0])} is typing…`
+							: `Multiple people are typing…`}
+					</div>
+				{/if}
 
 				<!-- INPUT -->
 				<form class="dm-input" on:submit|preventDefault={sendMessage}>
@@ -817,7 +777,7 @@
 		display: flex;
 		flex-direction: column;
 		height: 100%;
-    min-height: 0;
+		min-height: 0;
 	}
 
 	.chat-header {
@@ -1022,14 +982,13 @@
 	}
 
 	.dm-panel {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    height: 100%; /* 👈 critical */
-    min-height: 0;
-    overflow: hidden;
-  }
-
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		height: 100%; /* 👈 critical */
+		min-height: 0;
+		overflow: hidden;
+	}
 
 	/* HEADER */
 	.dm-header {
@@ -1064,44 +1023,76 @@
 		display: flex;
 		flex-direction: column;
 		gap: 10px;
-    min-height: 0;
+		min-height: 0;
 	}
 
 	.message {
 		display: flex;
+		max-width: 100%;
+		width: 40%;
 	}
 
 	.message.me {
 		justify-content: flex-end;
 	}
 
-  .bubble {
-    position: relative;
-  }
+	.message-row {
+		display: flex;
+		align-items: flex-end;
+		gap: 8px;
+		width: 100%;
+	}
 
-  .time {
-    display: block;
-    margin-top: 4px;
-    font-size: 10px;
-    color: rgba(255, 255, 255, 0.5);
-    text-align: right;
-  }
+	.message-row.me {
+		justify-content: flex-end;
+	}
+
+		/* Avatar next to friend messages */
+	.message-avatar {
+		width: 32px;
+		height: 32px;
+		border-radius: 50%;
+		flex-shrink: 0;
+	}
 
 	.message .bubble {
-		max-width: 60%;
+		max-width: 80%;
 		padding: 10px 14px;
 		border-radius: 14px;
 		background: #1f1f1f;
 		color: white;
+		word-wrap: break-word;
+  		overflow-wrap: break-word;
+	}
+
+	.content {
+		white-space: pre-wrap;
+		word-break: break-word;
 	}
 
 	.message.me .bubble {
 		background: #7c3aed;
 	}
 
+	.message-row.them .bubble {
+		max-width: 85%;
+	}
+
+	.bubble {
+		position: relative;
+	}
+
+	.time {
+		display: block;
+		margin-top: 4px;
+		font-size: 10px;
+		color: rgba(255, 255, 255, 0.5);
+		text-align: right;
+	}
+
 	/* INPUT */
 	.dm-input {
-    flex-shrink: 0;
+		flex-shrink: 0;
 		display: flex;
 		gap: 10px;
 		padding: 12px;
@@ -1126,58 +1117,65 @@
 		cursor: pointer;
 	}
 
-  .conversation-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 12px;
-}
+	.conversation-list {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		margin-bottom: 12px;
+	}
 
-.conversation-item {
-  display: flex;
-  gap: 10px;
-  padding: 10px;
-  border-radius: 12px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
+	.conversation-item {
+		display: flex;
+		gap: 10px;
+		padding: 10px;
+		border-radius: 12px;
+		cursor: pointer;
+		transition: background 0.15s;
+	}
 
-.conversation-item:hover {
-  background: rgba(255, 255, 255, 0.06);
-}
+	.conversation-item:hover {
+		background: rgba(255, 255, 255, 0.06);
+	}
 
-.conversation-item.active {
-  background: rgba(124, 58, 237, 0.25);
-}
+	.conversation-item.active {
+		background: rgba(124, 58, 237, 0.25);
+	}
 
-.conversation-item img {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-}
+	.conversation-item img {
+		width: 40px;
+		height: 40px;
+		border-radius: 50%;
+	}
 
-.conversation-item .meta {
-  flex: 1;
-  overflow: hidden;
-}
+	.conversation-item .meta {
+		flex: 1;
+		overflow: hidden;
+	}
 
-.conversation-item .name {
-  font-weight: 500;
-  color: white;
-}
+	.conversation-item .name {
+		font-weight: 500;
+		color: white;
+	}
 
-.conversation-item .preview {
-  font-size: 12px;
-  color: #9ca3af;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+	.conversation-item .preview {
+		font-size: 12px;
+		color: #9ca3af;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
 
-.typing-indicator {
-  font-size: 12px;
-  color: #9ca3af;
-  margin-top: 6px;
-  font-style: italic;
-}
+	.typing-indicator {
+		font-size: 12px;
+		color: #9ca3af;
+		margin-top: 6px;
+		font-style: italic;
+	}
+
+	.seen-indicator {
+		font-size: 11px;
+		color: #9ca3af;
+		margin-top: 4px;
+		text-align: right;
+	}
 </style>
