@@ -25,6 +25,20 @@
 	import FriendsTopPanel from '$lib/components/friends/FriendsTopPanel.svelte';
 
 
+	const waitForImages = async (container: HTMLElement) => {
+		const pending = Array.from(container.querySelectorAll("img"))
+			.filter((img) => !img.complete)
+			.map((img) => new Promise<void>((resolve) => {
+				img.addEventListener("load", () => resolve(), { once: true });
+				img.addEventListener("error", () => resolve(), { once: true });
+			}));
+		return Promise.all(pending).then(() => { });
+	};
+
+	const waitForRender = (): Promise<void> => new Promise((resolve) => {
+		requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+	});
+
 	let presenceInterval: any;
 	let messageInput = '';
 	let chatContainer: HTMLDivElement;
@@ -259,6 +273,11 @@
 	});
 
 	socket.on('dm:message', (message) => {
+		if (message.conversationId === $activeConversationId && isAtBottom) {
+			requestAnimationFrame(() => {
+				chatContainer.scrollTop = chatContainer.scrollHeight;
+			});
+		}
 		if (message.conversationId !== $activeConversationId) {
 			unreadCounts.update((_map) => {
 				const next = new Map(_map);
@@ -282,7 +301,7 @@
 		}
 
 		chatContainer.scrollTop = chatContainer.scrollHeight;
-		//scrollToBottom(true);
+		scrollToBottom(true);
 	});
 
 	socket.on('friend:request', (request) => {
@@ -395,11 +414,11 @@
 			return next;
 		});
 
-		// unreadCounts.update((_map) => {
-		// 	const next = new Map(_map);
-		// 	next.delete(convoId);
-		// 	return next;
-		// });
+		unreadCounts.update((_map) => {
+			const next = new Map(_map);
+			next.delete(convoId);
+			return next;
+		});
 
 		// await fetch(`${PUBLIC_API_URL}/dm/read`, {
 		// 	method: 'POST',
@@ -416,10 +435,22 @@
 		// const readMessageIds: string[] = await readRes.json();
 		// readMessages.set(new Set(readMessageIds));
 
-		requestAnimationFrame(() => {
-			chatContainer.scrollTop = chatContainer.scrollHeight;
+		requestAnimationFrame(async () => {
+			// requestAnimationFrame(() => {
+			// 	if (chatContainer) {
+			// 		chatContainer.scrollTop = chatContainer.scrollHeight;
+			// 		scrollToBottom(true);
+			// 	}
+			// });
+			setTimeout(() => {
+				if (chatContainer) {
+					chatContainer.scrollTop = chatContainer.scrollHeight;
+					scrollToBottom(true);
+				}
+				console.log('scrolled')
+			}, 10);	
 		});
-		//scrollToBottom(true);
+		
 	}
 
 	async function sendMessage() {
@@ -464,13 +495,19 @@
 
 		chatContainer.scrollTo({
 			top: chatContainer.scrollHeight,
-			behavior: 'auto'
+			behavior: 'smooth'
 		});
+		isAtBottom = true;
+		console.log('Scrolled to bottom');
 	}
 
 	async function handleScroll() {
 		if (!chatContainer) return;
-		if (chatContainer.scrollTop > 50) return;
+		
+		const threshold = 80;
+		isAtBottom =
+			chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight < threshold;
+		console.log('Checking isAtBottom', isAtBottom);
 
 		const convoId = $activeConversationId;
 		if (!convoId) return;
@@ -479,7 +516,7 @@
 		if (!cursor) return; // no more messages
 
 		if ($loadingOlderMessages.has(convoId)) return;
-
+		if (chatContainer.scrollTop > 50) return; // only load when near top
 		loadingOlderMessages.update(s => new Set(s).add(convoId));
 
 		const previousHeight = chatContainer.scrollHeight;
@@ -503,20 +540,17 @@
 			return next;
 		});
 
-		// preserve scroll position
-		requestAnimationFrame(() => {
-			chatContainer.scrollTop =
-			chatContainer.scrollHeight - previousHeight;
-		});
-
 		loadingOlderMessages.update(s => {
 			const next = new Set(s);
 			next.delete(convoId);
 			return next;
 		});
-		const threshold = 80;
-		isAtBottom =
-			chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight < threshold;
+
+		// preserve scroll position
+		requestAnimationFrame(() => {
+			chatContainer.scrollTop =
+			chatContainer.scrollHeight - previousHeight;
+		});	
 	}
 </script>
 
@@ -642,6 +676,11 @@
 				{/if}
 
 				<!-- INPUT -->
+				 {#if !isAtBottom}
+					<button class="jump-to-bottom" on:click={scrollToBottom}>
+					Jump to latest message
+					</button>
+				{/if}
 				<form class="dm-input" on:submit|preventDefault={sendMessage}>
 					<input placeholder="Type a message..." bind:value={messageInput} on:input={emitTyping} />
 					<button type="submit">Send</button>
@@ -1149,5 +1188,26 @@
 		align-items: center;
 		justify-content: center;
 		line-height: 1;
+	}
+
+	.jump-to-bottom {
+		margin: 8px 16px;
+		padding: 8px 12px;
+
+		background: var(--gray-700);
+		color: var(--text-primary);
+
+		border: none;
+		border-radius: var(--radius-md);
+		cursor: pointer;
+
+		font-size: 13px;
+		text-align: center;
+
+		transition: background var(--ease-fast);
+	}
+
+	.jump-to-bottom:hover {
+		background: var(--gray-600);
 	}
 </style>
