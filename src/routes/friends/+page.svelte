@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Bell, UserPlus, MoreVertical } from 'lucide-svelte';
+	import { MoreVertical, X } from 'lucide-svelte';
 	import { onlineUsers } from '$lib/stores/presence';
 	import { socket } from '$lib/socket';
 	import { onMount, onDestroy } from 'svelte';
@@ -7,7 +7,6 @@
 		activeConversationId,
 		messagesByConversation,
 		typingUsers,
-		conversations,
 		unreadCounts,
 		friendConversationMap
 	} from '$lib/stores/dm';
@@ -15,6 +14,16 @@
 	import { currentUser } from '$lib/stores/user';
 	import { browser } from '$app/environment';
 	import { readMessages } from '$lib/stores/dm';
+	import { PUBLIC_API_URL } from '$env/static/public';
+	import { playMessageSound } from '$lib/sounds';
+	import { formatAvatarUrl, formatMessageTime } from '$lib/utils';
+
+	// Components
+	import AddFriendModal from '$lib/components/friends/AddFriendModal.svelte';
+	let addFriendModalRef: AddFriendModal;
+	import NotificationsModal from '$lib/components/friends/NotificationsModal.svelte';
+	import FriendsTopPanel from '$lib/components/friends/FriendsTopPanel.svelte';
+
 
 	let presenceInterval: any;
 	let messageInput = '';
@@ -24,8 +33,6 @@
 	let openMenuFor = null;
 	// Friend add
 	let showAddFriend = false;
-	let addUsername = '';
-	let addError = '';
 	// Bell icon notifications
 	let notifications = [];
 	let showNotifications = false;
@@ -33,9 +40,36 @@
 	let isAtBottom = true;
 	let typingTimeout: any;
 
-	$: filteredFriends = friends.filter((f) =>
+	$: sortedFriends = friends
+	.filter(f =>
 		f.username.toLowerCase().includes(search.toLowerCase())
-	);
+	)
+	.sort((a, b) => {
+		const convoA = $friendConversationMap.get(a.id);
+		const convoB = $friendConversationMap.get(b.id);
+
+		const timeA = convoA ? lastMessageByConversation.get(convoA) ?? 0 : 0;
+		const timeB = convoB ? lastMessageByConversation.get(convoB) ?? 0 : 0;
+
+		// newest first
+		if (timeA !== timeB) {
+		return timeB - timeA;
+		}
+
+		// fallback: alphabetical
+		return a.username.localeCompare(b.username);
+	});
+	$: lastMessageByConversation = new Map<string, number>();
+
+	
+	for (const [convoId, messages] of $messagesByConversation.entries()) {
+	if (messages.length > 0) {
+		lastMessageByConversation.set(
+		convoId,
+		new Date(messages[messages.length - 1].createdAt).getTime()
+		);
+	}
+	}
 
 	onMount(async () => {
 		if (!browser) return;
@@ -44,23 +78,53 @@
 			unreadCounts.set(new Map(JSON.parse(stored)));
 		}
 
-		const unsubscribe = unreadCounts.subscribe((map) => {
-			localStorage.setItem('unreadCounts', JSON.stringify(Array.from(map.entries())));
+		const unsubscribe = unreadCounts.subscribe((_map) => {
+			localStorage.setItem('unreadCounts', JSON.stringify(Array.from(_map.entries())));
 		});
-		const res = await fetch('http://localhost:3001/friends/requests', {
+		const res = await fetch(`${PUBLIC_API_URL}/friends/requests`, {
 			credentials: 'include'
 		});
 		notifications = await res.json();
-		const res2 = await fetch('http://localhost:3001/friends', {
+		const res2 = await fetch(`${PUBLIC_API_URL}/friends`, {
 			credentials: 'include'
 		});
 		friends = await res2.json();
+		console.log('Loaded friends:', friends);
+
 		document.addEventListener('click', closeMenus);
-		//loadConversations();
+		await loadConversations();
 		pollPresence(); // initial
 		presenceInterval = setInterval(pollPresence, 5000); // every 5s
 		return () => document.removeEventListener('click', closeMenus);
 	});
+
+	async function loadConversations() {
+		const res = await fetch(`${PUBLIC_API_URL}/dm/conversations`, {
+			credentials: 'include'
+		});
+
+		const conversations = await res.json();
+
+		const map = new Map<string, string>();
+		const lastMap = new Map<string, number>();
+
+		for (const convo of conversations) {
+			const other = convo.participants.find(p => p.userId !== $currentUser.id);
+			if (!other) continue;
+
+			map.set(other.userId, convo.id);
+
+			if (convo.messages.length > 0) {
+			lastMap.set(
+				convo.id,
+				new Date(convo.messages[0].createdAt).getTime()
+			);
+			}
+		}
+
+		friendConversationMap.set(map);
+		lastMessageByConversation.set(lastMap);
+	}
 
 	onDestroy(() => {
 		clearInterval(presenceInterval);
@@ -92,28 +156,14 @@
 		openMenuFor = null;
 	}
 
-	async function loadConversations() {
-		const res = await fetch('http://localhost:3001/dm/conversations', {
-			credentials: 'include'
-		});
-
-		const convos = await res.json();
-		conversations.set(convos);
-
-		// build friend → conversation map
-		friendConversationMap.set(
-			new Map(
-				convos.map((convo) => {
-					const other = convo.participants.find((p) => p.user.id !== $currentUser.id)?.user;
-					return [other.id, convo.id];
-				})
-			)
-		);
+	function closeConversation() {
+		selectedFriend = null;
+		activeConversationId.set(null);
 	}
 
 	async function pollPresence() {
 		try {
-			const res = await fetch('http://localhost:3001/presence', {
+			const res = await fetch(`${PUBLIC_API_URL}/presence`, {
 				credentials: 'include'
 			});
 
@@ -132,7 +182,7 @@
 	}
 
 	async function deleteFriend(friendId) {
-		const res = await fetch('http://localhost:3001/friends/delete', {
+		const res = await fetch(`${PUBLIC_API_URL}/friends/delete`, {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json'
@@ -153,32 +203,30 @@
 		openMenuFor = null;
 	}
 
-	async function sendFriendRequest() {
-		addError = '';
+	async function sendFriendRequest(username: string) {
 
-		if (!addUsername) {
-			addError = 'Please enter a username';
+		if (!username) {
+			addFriendModalRef?.setError('Please enter a username');
 			return;
 		}
 
-		const res = await fetch('http://localhost:3001/friends/request', {
+		const res = await fetch(`${PUBLIC_API_URL}/friends/request`, {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json'
 			},
 			credentials: 'include',
 			body: JSON.stringify({
-				username: addUsername
+				username
 			})
 		});
 
 		if (!res.ok) {
-			addError = await res.text();
+			addFriendModalRef?.setError(await res.text());
 			return;
 		}
 
 		showAddFriend = false;
-		addUsername = '';
 	}
 
 	socket.on('dm:typing', ({ conversationId, userId }) => {
@@ -212,8 +260,8 @@
 
 	socket.on('dm:message', (message) => {
 		if (message.conversationId !== $activeConversationId) {
-			unreadCounts.update((map) => {
-				const next = new Map(map);
+			unreadCounts.update((_map) => {
+				const next = new Map(_map);
 				next.set(message.conversationId, (next.get(message.conversationId) ?? 0) + 1);
 				return next;
 			});
@@ -226,20 +274,12 @@
 			next.set(message.conversationId, [...msgs, message]);
 			return next;
 		});
+		const isFromMe = message.sender.id === $currentUser.id;
+		const isActiveConversation = message.conversationId === $activeConversationId;
 
-		conversations.update((list) => {
-			const idx = list.findIndex((c) => c.id === message.conversationId);
-			if (idx === -1) return list;
-
-			const convo = list[idx];
-
-			const updated = {
-				...convo,
-				messages: [message]
-			};
-
-			return [updated, ...list.filter((c) => c.id !== message.conversationId)];
-		});
+		if (!isFromMe && !isActiveConversation) {
+			playMessageSound();
+		}
 
 		scrollToBottom(true);
 	});
@@ -284,7 +324,7 @@
 
 	async function respond(requestId: string, accept: boolean) {
 		try {
-			const res = await fetch('http://localhost:3001/friends/respond', {
+			const res = await fetch(`${PUBLIC_API_URL}/friends/respond`, {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json'
@@ -314,7 +354,7 @@
 	}
 
 	async function loadFriends() {
-		const res = await fetch('http://localhost:3001/friends', {
+		const res = await fetch(`${PUBLIC_API_URL}/friends`, {
 			credentials: 'include'
 		});
 
@@ -324,7 +364,7 @@
 	async function openDM(friend) {
 		selectedFriend = friend;
 
-		const res = await fetch('http://localhost:3001/dm/conversation', {
+		const res = await fetch(`${PUBLIC_API_URL}/dm/conversation`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			credentials: 'include',
@@ -334,7 +374,7 @@
 		const convo = await res.json();
 		activeConversationId.set(convo.id);
 
-		const msgRes = await fetch(`http://localhost:3001/dm/${convo.id}/messages`, {
+		const msgRes = await fetch(`${PUBLIC_API_URL}/dm/${convo.id}/messages`, {
 			credentials: 'include'
 		});
 
@@ -344,14 +384,15 @@
 			_map.set(convo.id, messages);
 			return new Map(_map);
 		});
+		console.log('messagesbyconversation:', $messagesByConversation);
 		const convoId = $friendConversationMap.get(friend.id);
 		if (!convoId) return;
-		unreadCounts.update((map) => {
-			const next = new Map(map);
+		unreadCounts.update((_map) => {
+			const next = new Map(_map);
 			next.delete(convoId);
 			return next;
 		});
-		await fetch('http://localhost:3001/dm/read', {
+		await fetch(`${PUBLIC_API_URL}/dm/read`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			credentials: 'include',
@@ -359,7 +400,7 @@
 		});
 
 		const readRes = await fetch(
-			`http://localhost:3001/dm/${convo.id}/reads`,
+			`${PUBLIC_API_URL}/dm/${convo.id}/reads`,
 			{ credentials: 'include' }
 		);
 
@@ -375,7 +416,7 @@
 		const content = messageInput;
 		messageInput = '';
 
-		await fetch('http://localhost:3001/dm/message', {
+		await fetch(`${PUBLIC_API_URL}/dm/message`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			credentials: 'include',
@@ -421,95 +462,48 @@
 		isAtBottom =
 			chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight < threshold;
 	}
-
-	function formatTime(date: string) {
-		return new Date(date).toLocaleTimeString([], {
-			hour: '2-digit',
-			minute: '2-digit'
-		});
-	}
 </script>
 
 {#if showAddFriend}
-	<div class="modal-backdrop" on:click={() => (showAddFriend = false)}>
-		<div class="modal" on:click|stopPropagation>
-			<button class="close" on:click={() => (showAddFriend = false)}>✕</button>
-
-			<h3>Add Friend</h3>
-
-			<input placeholder="Username" bind:value={addUsername} />
-
-			{#if addError}
-				<p class="error">{addError}</p>
-			{/if}
-
-			<button class="primary" on:click={sendFriendRequest}> Add </button>
-		</div>
-	</div>
+  <AddFriendModal
+    bind:this={addFriendModalRef}
+    on:submit={(e) => sendFriendRequest(e.detail)}
+    on:close={() => (showAddFriend = false)}
+  />
 {/if}
 
 {#if showNotifications}
-	<div class="modal-backdrop">
-		<div class="modal">
-			<button class="close" on:click={() => (showNotifications = false)}>✕</button>
-
-			<h3>Friend Requests</h3>
-
-			{#if notifications.length === 0}
-				<p class="empty">No pending requests</p>
-			{:else}
-				{#each notifications as n}
-					<div class="notification">
-						<span>
-							<strong>{n.from.username}</strong> sent you a friend request
-						</span>
-
-						<div class="actions">
-							<button class="accept" on:click={() => respond(n.id, true)}> Accept </button>
-
-							<button class="decline" on:click={() => respond(n.id, false)}> Decline </button>
-						</div>
-					</div>
-				{/each}
-			{/if}
-		</div>
-	</div>
+  <NotificationsModal
+    {notifications}
+    on:close={() => (showNotifications = false)}
+    on:respond={(e) => respond(e.detail.id, e.detail.accept)}
+  />
 {/if}
+
 
 <div class="friends-layout">
 	<!-- LEFT PANEL -->
 	<aside class="friends-panel">
-		<div class="panel-header">
-			<input class="search" placeholder="Search friends..." bind:value={search} />
-
-			<div class="panel-actions">
-				<button class="icon-btn bell" on:click={() => (showNotifications = true)}>
-					<Bell size={18} />
-
-					{#if notifications.length > 0}
-						<span class="badge">{notifications.length}</span>
-					{/if}
-				</button>
-				<button class="icon-btn" on:click={() => (showAddFriend = true)}>
-					<UserPlus size={18} />
-				</button>
-			</div>
-		</div>
-
+		<FriendsTopPanel
+			{search}
+			notificationCount={notifications.length}
+			on:search={(e) => (search = e.detail)}
+			on:notifications={() => (showNotifications = true)}
+			on:addfriend={() => (showAddFriend = true)}
+		/>
 		<div class="friends-list">
-			{#each filteredFriends as friend}
+			{#each sortedFriends as friend}
 				{@const convoId = $friendConversationMap.get(friend.id)}
 				{@const unread = convoId ? $unreadCounts.get(convoId) : 0}
 
-				<div class="friend-bubble" on:click={() => openDM(friend)}>
+				<div class="friend-bubble {convoId === $activeConversationId ? 'active' : ''}" on:click={() => openDM(friend)}>
 					<div class="avatar-wrapper">
-						<img src="/avatar-placeholder.png" alt="" />
+						<img src={formatAvatarUrl(friend.avatarUrl)} alt="" />
 
 						<span class="status-dot" style="background: {statusColor(effectiveStatus(friend))}" />
 					</div>
 
 					<span class="name">{friend.username}</span>
-
 					{#if unread}
 						<span class="badge">{unread}</span>
 					{/if}
@@ -540,16 +534,20 @@
 		{#if selectedFriend}
 			{@const msgs = $messagesByConversation.get($activeConversationId) ?? []}
 			{@const lastMsg = msgs[msgs.length - 1]}
-			<div class="dm-panel">
+			<div class="dm-panel">	
 				<!-- HEADER -->
 				<div class="dm-header">
-					<img src="/avatar-placeholder.png" />
+					<button class="close-chat" on:click={closeConversation}>
+					<X size={18} />
+				</button>
+					<img src={formatAvatarUrl(selectedFriend.avatarUrl)} />
 					<div class="info">
 						<div class="name">{selectedFriend.username}</div>
 						<div class="status">
 							{effectiveStatus(selectedFriend)}
 						</div>
 					</div>
+					
 				</div>
 
 				<!-- MESSAGES -->				
@@ -559,14 +557,14 @@
 							{#if msg.sender.id !== $currentUser.id}
 							<img
 								class="message-avatar"
-								src="/avatar-placeholder.png"
+								src={formatAvatarUrl(msg.sender.avatarUrl)}
 								alt="avatar"
 							/>
 							{/if}
 							<div class="message {msg.sender.id === $currentUser.id ? 'me' : ''}">
 								<div class="bubble">
 									<span class="content">{msg.content}</span>
-									<span class="time">{formatTime(msg.createdAt)}</span>
+									<span class="time">{formatMessageTime(msg.createdAt)}</span>
 								</div>
 							</div>
 						</div>
@@ -614,64 +612,6 @@
 		background: var(--surface);
 		border-right: 1px solid #222;
 		min-height: 0;
-	}
-
-	.panel-header {
-		padding: 12px;
-		border-bottom: 1px solid #222;
-		flex-shrink: 0;
-	}
-
-	.search {
-		width: 100%;
-		margin-bottom: 8px;
-		background: #1a1a1a;
-		border: 1px solid #222;
-		border-radius: 10px;
-		padding: 8px 10px;
-		color: var(--text);
-	}
-
-	.panel-actions {
-		display: flex;
-		gap: 8px;
-	}
-
-	.icon-btn {
-		position: relative;
-		/* 👈 REQUIRED */
-		width: 36px;
-		height: 36px;
-		border-radius: 10px;
-		background: #222;
-		border: none;
-		color: var(--text);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		cursor: pointer;
-	}
-
-	.icon-btn:hover {
-		background: #2a2a2a;
-	}
-
-	.badge {
-		position: absolute;
-		top: -4px;
-		right: -4px;
-		min-width: 18px;
-		height: 18px;
-		padding: 0 5px;
-		background: #ef4444;
-		color: white;
-		font-size: 11px;
-		font-weight: 600;
-		border-radius: 999px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		line-height: 1;
 	}
 
 	.friends-list {
@@ -733,6 +673,11 @@
 		position: relative;
 	}
 
+	.friend-bubble.active {
+		background: var(--gray-600);
+		outline: 1px solid var(--purple-500);
+	}
+
 	.more-btn {
 		background: transparent;
 		border: none;
@@ -772,6 +717,20 @@
 	}
 
 	/* ───────── CHAT PANEL ───────── */
+	.close-chat {
+		background: transparent;
+		border: none;
+		color: var(--text-muted);
+		cursor: pointer;
+		padding: 6px;
+		border-radius: var(--radius-sm);
+		transition: background var(--ease-fast), color var(--ease-fast);
+	}
+
+	.close-chat:hover {
+		background: var(--gray-700);
+		color: var(--text-primary);
+	}
 
 	.chat-panel {
 		display: flex;
@@ -781,11 +740,13 @@
 	}
 
 	.chat-header {
-		flex-shrink: 0;
-		padding: 14px 16px;
-		border-bottom: 1px solid #222;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 12px 16px;
+		background: var(--gray-800);
+		border-bottom: 1px solid var(--gray-700);
 	}
-
 	.chat-user {
 		display: flex;
 		align-items: center;
@@ -902,68 +863,6 @@
 		background: #22c55e;
 		border-radius: 50%;
 		border: 2px solid #1f1f1f;
-	}
-
-	.modal-backdrop {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.65);
-		display: grid;
-		place-items: center;
-		z-index: 1000;
-	}
-
-	.modal {
-		width: 320px;
-		background: #1c1c1c;
-		border-radius: 16px;
-		padding: 20px;
-		display: flex;
-		flex-direction: column;
-		gap: 12px;
-		position: relative;
-		box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8);
-	}
-
-	.modal h3 {
-		margin: 0;
-	}
-
-	.modal input {
-		background: #2a2a2a;
-		border: none;
-		border-radius: 10px;
-		padding: 10px;
-		color: white;
-	}
-
-	.modal input:focus {
-		outline: 2px solid var(--accent);
-	}
-
-	.modal .primary {
-		background: var(--accent);
-		color: white;
-		border: none;
-		border-radius: 10px;
-		padding: 10px;
-		font-weight: 600;
-		cursor: pointer;
-	}
-
-	.modal .close {
-		position: absolute;
-		top: 10px;
-		right: 10px;
-		background: none;
-		border: none;
-		color: #aaa;
-		font-size: 18px;
-		cursor: pointer;
-	}
-
-	.modal .close:hover {
-		color: white;
 	}
 
 	.empty {
@@ -1177,5 +1076,22 @@
 		color: #9ca3af;
 		margin-top: 4px;
 		text-align: right;
+	}
+
+	.badge {
+		position: absolute;
+		right: 2px;
+		min-width: 18px;
+		height: 18px;
+		padding: 0 5px;
+		background: #ef4444;
+		color: white;
+		font-size: 11px;
+		font-weight: 600;
+		border-radius: 999px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		line-height: 1;
 	}
 </style>

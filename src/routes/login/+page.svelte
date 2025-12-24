@@ -1,4 +1,6 @@
 <script>
+	import { PUBLIC_API_URL } from '$env/static/public';
+
 	let mode = 'login'; // 'login' | 'register'
 
 	let email = '';
@@ -26,7 +28,7 @@
 		loading = true;
 
 		try {
-			const res = await fetch('http://localhost:3001/auth/login', {
+			const res = await fetch(`${PUBLIC_API_URL}/auth/login`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				credentials: 'include',
@@ -63,7 +65,7 @@
 		loading = true;
 
 		try {
-			const res = await fetch('http://localhost:3001/auth/register', {
+			const res = await fetch(`${PUBLIC_API_URL}/auth/register`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ email, username, password })

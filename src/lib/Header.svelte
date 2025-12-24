@@ -4,6 +4,8 @@
 	import { currentUser } from '$lib/stores/user';
 	import { currentStatus } from '$lib/stores/status';
 	import { socket } from '$lib/socket';
+	import { PUBLIC_API_URL } from '$env/static/public';
+	import { formatAvatarUrl } from '$lib/utils';
 
 	$: path = $page.url.pathname;
 	let showStatusMenu = false;
@@ -25,7 +27,7 @@
 	async function setStatus(status) {
 		currentStatus.set(status);
 
-		await fetch('http://localhost:3001/user/status', {
+		await fetch(`${PUBLIC_API_URL}/user/status`, {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json'
@@ -39,7 +41,7 @@
 
 	async function logout() {
 		try {
-			await fetch('http://localhost:3001/auth/logout', {
+			await fetch(`${PUBLIC_API_URL}/auth/logout`, {
 			method: 'POST',
 			credentials: 'include'
 			});
@@ -74,7 +76,7 @@
 	{#if $currentUser}
 		<div class="header-user" on:click={() => (showStatusMenu = !showStatusMenu)}>
 			<div class="avatar-wrapper">
-				<img src="/avatar-placeholder.png" alt="Profile" />
+				<img src={formatAvatarUrl($currentUser.avatarUrl)} alt="Profile" />
 				<span class="status-dot" style="background: {statusColor($currentStatus)}" />
 			</div>
 

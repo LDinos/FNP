@@ -9,15 +9,23 @@
 	import { page } from '$app/stores';
 	import { onlineUsers } from '$lib/stores/presence';
 	import { currentStatus } from '$lib/stores/status';
+	import { PUBLIC_API_URL } from '$env/static/public';
 
 	onMount(async () => {
 		const { pathname } = get(page).url;
+		const prime = () => {
+			const audio = new Audio();
+			audio.play().catch(() => {});
+			window.removeEventListener('click', prime);
+		};
 
-		// 🚫 Do NOT run auth logic on login page
+		window.addEventListener('click', prime);
+
+		// Do NOT run auth logic on login page
 		if (pathname === '/login') return;
 
 		try {
-			const res = await fetch('http://localhost:3001/auth/me', {
+			const res = await fetch(`${PUBLIC_API_URL}/auth/me`, {
 				credentials: 'include'
 			});
 
