@@ -13,7 +13,7 @@
 	import type { Message } from '$lib/types/dm';
 	import { currentUser } from '$lib/stores/user';
 	import { browser } from '$app/environment';
-	import { readMessages } from '$lib/stores/dm';
+	import { readMessages, messageCursors, loadingOlderMessages } from '$lib/stores/dm';
 	import { PUBLIC_API_URL } from '$env/static/public';
 	import { playMessageSound } from '$lib/sounds';
 	import { formatAvatarUrl, formatMessageTime } from '$lib/utils';
@@ -281,7 +281,8 @@
 			playMessageSound();
 		}
 
-		scrollToBottom(true);
+		chatContainer.scrollTop = chatContainer.scrollHeight;
+		//scrollToBottom(true);
 	});
 
 	socket.on('friend:request', (request) => {
@@ -372,42 +373,53 @@
 		});
 
 		const convo = await res.json();
-		activeConversationId.set(convo.id);
+		const convoId = convo.id;
+		if (!convoId) return;
+		activeConversationId.set(convoId);
 
-		const msgRes = await fetch(`${PUBLIC_API_URL}/dm/${convo.id}/messages`, {
+		const msgRes = await fetch(`${PUBLIC_API_URL}/dm/${convoId}/messages?limit=20`, {
 			credentials: 'include'
 		});
 
-		const messages: Message[] = await msgRes.json();
+		const { messages, nextCursor } = await msgRes.json();
 
-		messagesByConversation.update((_map) => {
-			_map.set(convo.id, messages);
-			return new Map(_map);
-		});
-		console.log('messagesbyconversation:', $messagesByConversation);
-		const convoId = $friendConversationMap.get(friend.id);
-		if (!convoId) return;
-		unreadCounts.update((_map) => {
-			const next = new Map(_map);
-			next.delete(convoId);
+		 messagesByConversation.update(map => {
+			const next = new Map(map);
+			next.set(convoId, messages);
 			return next;
 		});
-		await fetch(`${PUBLIC_API_URL}/dm/read`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			credentials: 'include',
-			body: JSON.stringify({ conversationId: convo.id })
+
+		messageCursors.update(map => {
+			const next = new Map(map);
+			next.set(convoId, nextCursor);
+			return next;
 		});
 
-		const readRes = await fetch(
-			`${PUBLIC_API_URL}/dm/${convo.id}/reads`,
-			{ credentials: 'include' }
-		);
+		// unreadCounts.update((_map) => {
+		// 	const next = new Map(_map);
+		// 	next.delete(convoId);
+		// 	return next;
+		// });
 
-		const readMessageIds: string[] = await readRes.json();
-		readMessages.set(new Set(readMessageIds));
+		// await fetch(`${PUBLIC_API_URL}/dm/read`, {
+		// 	method: 'POST',
+		// 	headers: { 'Content-Type': 'application/json' },
+		// 	credentials: 'include',
+		// 	body: JSON.stringify({ conversationId: convo.id })
+		// });
 
-		scrollToBottom(true);
+		// const readRes = await fetch(
+		// 	`${PUBLIC_API_URL}/dm/${convo.id}/reads`,
+		// 	{ credentials: 'include' }
+		// );
+
+		// const readMessageIds: string[] = await readRes.json();
+		// readMessages.set(new Set(readMessageIds));
+
+		requestAnimationFrame(() => {
+			chatContainer.scrollTop = chatContainer.scrollHeight;
+		});
+		//scrollToBottom(true);
 	}
 
 	async function sendMessage() {
@@ -456,8 +468,52 @@
 		});
 	}
 
-	function handleScroll() {
+	async function handleScroll() {
 		if (!chatContainer) return;
+		if (chatContainer.scrollTop > 50) return;
+
+		const convoId = $activeConversationId;
+		if (!convoId) return;
+
+		const cursor = $messageCursors.get(convoId);
+		if (!cursor) return; // no more messages
+
+		if ($loadingOlderMessages.has(convoId)) return;
+
+		loadingOlderMessages.update(s => new Set(s).add(convoId));
+
+		const previousHeight = chatContainer.scrollHeight;
+
+		const res = await fetch(
+			`${PUBLIC_API_URL}/dm/${convoId}/messages?limit=20&cursor=${cursor}`,
+			{ credentials: 'include' }
+		);
+
+		const { messages, nextCursor } = await res.json();
+
+		messagesByConversation.update(map => {
+			const next = new Map(map);
+			next.set(convoId, [...messages, ...(next.get(convoId) ?? [])]);
+			return next;
+		});
+
+		messageCursors.update(map => {
+			const next = new Map(map);
+			next.set(convoId, nextCursor);
+			return next;
+		});
+
+		// preserve scroll position
+		requestAnimationFrame(() => {
+			chatContainer.scrollTop =
+			chatContainer.scrollHeight - previousHeight;
+		});
+
+		loadingOlderMessages.update(s => {
+			const next = new Set(s);
+			next.delete(convoId);
+			return next;
+		});
 		const threshold = 80;
 		isAtBottom =
 			chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight < threshold;
